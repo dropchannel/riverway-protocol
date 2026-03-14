@@ -66,10 +66,10 @@ or whether prior payloads were consumed.
 
 ### Consumer
 
-A Consumer is an endpoint that reads from the tail of the pipeline. It reads the latest
-available payload using `read()` (consume-on-read). If no payload is present, it finds
-an empty slot and waits. The consumer's `read()` is terminal — it clears the slot and
-does not trigger any cascade. There is no confirmation sent back to the producer.
+A Consumer is an endpoint that observes the tail of the pipeline. It calls `peek()` on
+its recv-slot to read the latest available payload without clearing it. Multiple
+consumers may independently observe the same tail slot. The consumer does not affect
+slot state — it is purely observational. There is no signal sent back to the producer.
 
 ### Node
 
@@ -109,10 +109,19 @@ expressed through these five operations:
 | `exists(channel_id, slot)` | Returns `True` if a blob is present, `False` if empty. |
 | `delete(channel_id, slot)` | Delete blob. Idempotent. |
 
-Conveyer nodes use `exists()` to poll the recv-slot, `peek()` to read it, and `delete()`
+Conveyer nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
+overwrite the send-slot. Consumers use only `peek()`. The producer uses `delete()` +
+`write()`. `read()` and `exists()` are not used by any Conveyer participant.
 
-- `write()` to overwrite the send-slot. Nodes never call `read()`. The consumer uses
-only `read()`. There is no ACK cascade and no send-slot polling by any participant.
+| Operation | Producer | Node | Consumer |
+|-----------|----------|------|----------|
+| `write()` | ✓ | ✓ | — |
+| `read()` | — | — | — |
+| `peek()` | — | ✓ | ✓ |
+| `exists()` | — | — | — |
+| `delete()` | ✓ | ✓ | — |
+
+There is no ACK cascade and no send-slot polling by any participant.
 
 ---
 
@@ -122,45 +131,54 @@ only `read()`. There is no ACK cascade and no send-slot polling by any participa
 
 **Slot presence = current state available. Slot absence = no state yet.**
 
-A blob in a slot is the most recent payload available at that position. It may be
-consumed by the downstream participant or overwritten by a newer payload — both outcomes
-are valid. There is no notion of a slot being "in-flight" or "held pending ACK."
+A blob in a slot is the most recent payload to have reached that position. It remains
+in the slot until overwritten by a newer payload from upstream. Consumers do not clear
+slots — observation is non-destructive. There is no notion of a slot being "in-flight"
+or "held pending ACK."
 
 ### Forward pass
 
-When a node finds a payload on its recv-slot, it immediately writes it to its send-slot.
-If the send-slot is already occupied (by a prior payload not yet consumed downstream),
-the node **overwrites it unconditionally**. The prior payload is discarded. This is the
-defining behavior of the Conveyer protocol.
+When a node finds a payload on its recv-slot, it compares it to the last blob it
+forwarded. If the content differs (or no prior forward has occurred), it overwrites the
+send-slot unconditionally. If the content is identical, the forward is skipped — the
+send-slot already holds the correct value. The node then sleeps regardless of outcome.
 
 ```
 Node forward pass:
 
-  blob = peek(recv_slot)   # non-consuming read
-  delete(send_slot)        # clear prior value if present; idempotent if empty
-  write(send_slot, blob)   # write latest payload forward
+  blob = peek(recv_slot)        # non-consuming; None if empty
+  if blob is not None:
+      h = sha256(blob)          # hash over ciphertext; node stays crypto-blind
+      if h != last_forwarded_hash:
+          delete(send_slot)     # idempotent
+          write(send_slot, blob)
+          last_forwarded_hash = h
+  sleep(POLL_INTERVAL)          # always sleep
 ```
 
-The node does not check whether the send-slot is occupied before overwriting. `delete()`
-is idempotent — it is safe to call on an empty slot. Overwrite is always unconditional.
-The window between `delete()` and `write()` is a known limitation — see
-[Out of scope](#out-of-scope).
+The deduplication hash is held in memory only. It is not persisted across restarts. On
+restart, the first recv-slot payload is always forwarded unconditionally.
 
-### Consumer read
+### Consumer observation
 
-The consumer calls `read()` on its recv-slot. This is consume-on-read: the blob is
-returned to the application and the slot is cleared. No cascade is triggered. The
-consumer does not signal the producer or any intermediate node that delivery occurred.
+The consumer calls `peek()` on its recv-slot — non-destructive. The slot is not cleared.
+Multiple consumers may independently observe the same slot. The consumer sleeps
+regardless of whether a payload was found.
 
 ```
-Consumer read:
+Consumer observation:
 
-  blob = read(recv_slot)        # consume-on-read; slot cleared
-  if blob is None:
-      sleep(poll_interval)      # no payload available yet; wait
-  else:
+  blob = peek(recv_slot)        # non-consuming; slot unchanged
+  if blob is not None:
       deliver(blob)             # latest state delivered to application
+  sleep(POLL_INTERVAL)          # always sleep
 ```
+
+Because `peek()` does not clear the slot, the consumer will deliver the same blob on
+every cycle until a newer payload propagates through the pipeline. Applications MUST be
+prepared to receive the same payload repeatedly. To detect new arrivals, the application
+MAY maintain its own hash of the last-seen blob and compare — this is an
+application-layer concern.
 
 ### Producer write
 
@@ -178,65 +196,78 @@ Producer write:
 ### Key properties
 
 **No backpressure.** The producer is never blocked by downstream state. It writes at its
-own cadence regardless of whether prior payloads were consumed.
+own cadence regardless of downstream activity.
 
-**No delivery confirmation.** The producer receives no signal that any payload was
-consumed. Consumer presence is not observable at the protocol level.
+**No delivery confirmation.** The producer receives no signal that any consumer has
+observed its payload. Consumer presence is not observable at the protocol level.
 
-**Latest-wins.** At any point in the pipeline, the value in a slot is the most recent
-payload to have reached that position. Older payloads do not queue behind newer ones.
+**Latest-wins.** At any point in the pipeline, a slot holds the most recent payload to
+have reached that position. Older payloads do not queue.
+
+**Stable between updates.** Once a payload has propagated to a slot, it remains there
+undisturbed until a newer payload arrives. Nodes do not re-forward unchanged content.
+Consumers do not clear slots. The belt carries the current value continuously.
+
+**Non-destructive observation.** Any number of consumers may peek the tail slot
+independently without interfering with each other or with pipeline operation.
 
 **Crash safety.** If any participant crashes mid-forward, the most recently written
-payload remains durably in every slot already written. On restart, each participant
-inspects its slots and resumes forwarding. No payload is lost that had already been
-written to a slot — though payloads that were in-memory at crash time and not yet written
-are not recoverable.
+payload remains durably in every slot already written. On restart, each node inspects
+its recv-slot and resumes. The in-memory deduplication hash is lost on restart, causing
+at most one redundant forward on resumption.
 
-**Consumer absence is not an error.** If no consumer is polling, payloads accumulate at
-the tail slot and are overwritten by newer ones. The pipeline continues to operate
-correctly.
+**Consumer absence is not an error.** If no consumer is polling, the tail slot holds the
+latest forwarded payload indefinitely, ready for any consumer that arrives.
 
 ---
 
 ## Node lifecycle
 
+### State
+
+Each node maintains one piece of in-memory state across cycles:
+
+```
+last_forwarded_hash: bytes | None   # SHA-256 of last blob written to send-slot
+```
+
+Initialized to `None` on startup. Not persisted across restarts.
+
 ### Startup: inspect recv-slot only
 
-On startup the node calls `peek()` on its recv-slot once to determine starting state.
-The send-slot state is irrelevant — the node will overwrite it unconditionally on the
-first forward.
+On startup the node calls `peek()` on its recv-slot once. The send-slot is not
+inspected.
 
 | Recv-slot | Action |
 |-----------|--------|
-| Empty | → Polling loop (idle) |
-| Occupied | Forward immediately: `delete()` send → `write()` send → Polling loop |
+| Empty | Set `last_forwarded_hash = None`. → Polling loop. |
+| Occupied | Forward unconditionally. Set `last_forwarded_hash = sha256(blob)`. → Polling loop. |
 
 ### Polling loop (single steady state)
 
-There is only one steady state. The node polls its recv-slot continuously and forwards
-whatever it finds, overwriting the send-slot each time.
-
 ```
 Loop:
-  exists(recv_slot)?
-    No  → sleep(POLL_INTERVAL), repeat
-    Yes → blob = peek(recv_slot)
+  blob = peek(recv_slot)
+  if blob is not None:
+      h = sha256(blob)
+      if h != last_forwarded_hash:
           delete(send_slot)
           write(send_slot, blob)
-          repeat
+          last_forwarded_hash = h
+  sleep(POLL_INTERVAL)    # unconditional
+  repeat
 ```
 
-The node never watches its send-slot. Whether the prior payload was consumed downstream
-is not its concern. It has one job: when something is on the recv-slot, put it on the
-send-slot and wait for the next one.
+The node sleeps at the end of every cycle without exception. It never watches its
+send-slot. Its sole job is: when recv content has changed, push it forward.
 
 ### Polling cost
 
 | Phase | Operations per cycle |
 |-------|---------------------|
-| Startup | One `peek()` call, once only |
-| Polling (idle) | One `exists()` |
-| Forward transition | One `peek()` + one `delete()` + one `write()` |
+| Startup | One `peek()`, once only |
+| Polling (no change) | One `peek()` + hash compare |
+| Polling (new payload) | One `peek()` + one `delete()` + one `write()` |
 
 ---
 
@@ -286,12 +317,14 @@ Provider-specific env vars follow the same namespacing convention as Winch nodes
 | Delivery model | Exactly-once, end-to-end confirmed | Best-effort, latest-wins |
 | Backpressure | Yes — sender blocked until ACK | None |
 | ACK cascade | Yes | No |
-| Slot contention | Write guard; no overwrite | Overwrite always |
+| Slot contention | Write guard; no overwrite | Overwrite on change; deduplication otherwise |
+| Consumer operation | `read()` — destructive | `peek()` — non-destructive |
+| Multiple consumers | No | Yes |
 | Consumer required | Yes — ACK cascade requires it | No |
 | Pipeline direction | Bidirectional (two pipelines) | Unidirectional |
-| Startup stale send-slot | Impossible (error) | Recoverable (delete and continue) |
-| Crash recovery | Full — any state reconstructible | Full — latest written payload survives |
-| Intended use | Reliable message passing | Continuous state propagation |
+| Node state | Stateless between cycles | `last_forwarded_hash` in memory |
+| Crash recovery | Full — any state reconstructible | Full — latest written payload survives; hash lost |
+| Intended use | Reliable message passing | Continuous state observation |
 
 ---
 
@@ -300,6 +333,7 @@ Provider-specific env vars follow the same namespacing convention as Winch nodes
 | Version | Summary |
 |---------|---------|
 | [v0.1](history/v0.1.md) | Initial protocol: overwrite-forward, no ACK, single-slot pipeline |
+| [v0.2](history/v0.2.md) | Node deduplication via content hash; unconditional sleep; consumer uses `peek()` |
 
 ---
 
