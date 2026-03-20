@@ -1,6 +1,6 @@
-# Conveyer Protocol
+# Current Protocol
 
-Conveyer is a store-and-forward coordination protocol for continuous, unidirectional
+Current is a store-and-forward coordination protocol for continuous, unidirectional
 state propagation over shared storage. A producer writes the current state of a system
 into a channel slot; each node in the pipeline immediately forwards it to the next hop;
 a consumer at the end reads the latest available state. There is no ACK, no backpressure,
@@ -8,7 +8,7 @@ and no expectation that any consumer is present. If a newer payload arrives befo
 previous one was consumed, the previous one is overwritten and discarded — this is
 correct behavior, not a failure condition.
 
-Conveyer is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
+Current is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
 The system-level specification — including the `ChannelProvider` interface, encryption
 standard, and protocol dispatch rules — lives in
 [`dropchannel/spec`](https://github.com/dropchannel/spec).
@@ -32,7 +32,7 @@ standard, and protocol dispatch rules — lives in
 
 ### The belt
 
-A Conveyer channel is a one-way belt. The producer places the current state of a system
+A Current channel is a one-way belt. The producer places the current state of a system
 onto the belt; the belt carries it forward hop by hop; a consumer at the far end picks
 up whatever is currently on the belt. The belt does not stop if nobody is at the far end.
 It does not wait for acknowledgement that the last item was picked up. It does not hold
@@ -41,10 +41,10 @@ belt is its currency — not its eventual delivery.
 
 ### Channel
 
-A Conveyer channel carries unidirectional flow from a single producer to zero or more
+A Current channel carries unidirectional flow from a single producer to zero or more
 consumers. A channel has exactly one physical pipeline. There is no return pipeline and
 no bidirectionality requirement — if bidirectional state exchange is needed, two
-independent Conveyer channels are used.
+independent Current channels are used.
 
 ```
 Producer → [physical pipeline] → Consumer(s)
@@ -77,8 +77,8 @@ A Node is a process that forwards blobs from one `ChannelProvider` to the next. 
 are crypto-blind: they forward opaque bytes and perform no cryptographic operations. A
 node has no `SHARED_SECRET`.
 
-Node behavior is determined by the `conveyer-` channel name prefix. A node operating on
-a Conveyer channel applies overwrite-forward semantics rather than the hold-and-cascade
+Node behavior is determined by the `current-` channel name prefix. A node operating on
+a Current channel applies overwrite-forward semantics rather than the hold-and-cascade
 semantics of a Winch node.
 
 ### Separation of concerns
@@ -97,7 +97,7 @@ semantics of a Winch node.
 
 ## ChannelProvider interface
 
-Conveyer operates through the standard `ChannelProvider` interface defined in
+Current operates through the standard `ChannelProvider` interface defined in
 [`dropchannel/spec`](https://github.com/dropchannel/spec). All storage operations are
 expressed through these five operations:
 
@@ -109,9 +109,9 @@ expressed through these five operations:
 | `exists(channel_id, slot)` | Returns `True` if a blob is present, `False` if empty. |
 | `delete(channel_id, slot)` | Delete blob. Idempotent. |
 
-Conveyer nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
+Current nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
 overwrite the send-slot. Consumers use only `peek()`. The producer uses `delete()` +
-`write()`. `read()` and `exists()` are not used by any Conveyer participant.
+`write()`. `read()` and `exists()` are not used by any Current participant.
 
 | Operation | Producer | Node | Consumer |
 |-----------|----------|------|----------|
@@ -276,7 +276,7 @@ send-slot. Its sole job is: when recv content has changed, push it forward.
 ### Producer endpoint
 
 ```bash
-CHANNEL_ID=conveyer-<identifier>
+CHANNEL_ID=current-<identifier>
 SHARED_SECRET=<64 hex chars = 32 bytes>
 CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
 SEND_SLOT=<slot this endpoint writes to>
@@ -286,7 +286,7 @@ POLL_INTERVAL=<seconds>   # cadence for overwrite check; default 5
 ### Consumer endpoint
 
 ```bash
-CHANNEL_ID=conveyer-<identifier>
+CHANNEL_ID=current-<identifier>
 SHARED_SECRET=<64 hex chars = 32 bytes>
 CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
 RECV_SLOT=<slot this endpoint reads from>
@@ -296,7 +296,7 @@ POLL_INTERVAL=<seconds>   # default 5
 ### Node
 
 ```bash
-CHANNEL_ID=conveyer-<identifier>
+CHANNEL_ID=current-<identifier>
 # No SHARED_SECRET — nodes never encrypt or decrypt
 RECV_PROVIDER=<gcs|httprelay|dropbox|local>
 SEND_PROVIDER=<gcs|httprelay|dropbox|local>
@@ -312,7 +312,7 @@ Provider-specific env vars follow the same namespacing convention as Winch nodes
 
 ## Comparison with Winch
 
-| Property | Winch | Conveyer |
+| Property | Winch | Current |
 |----------|-------|----------|
 | Delivery model | Exactly-once, end-to-end confirmed | Best-effort, latest-wins |
 | Backpressure | Yes — sender blocked until ACK | None |
