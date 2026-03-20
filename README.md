@@ -22,7 +22,7 @@ standard, and protocol dispatch rules — lives in
 - [Propagation protocol](#propagation-protocol)
 - [Node lifecycle](#node-lifecycle)
 - [Configuration](#configuration)
-- [Comparison with Winch](#comparison-with-winch)
+- [Comparison with Tide](#comparison-with-tide)
 - [Version history](#version-history)
 - [Out of scope](#out-of-scope)
 
@@ -79,7 +79,7 @@ node has no `SHARED_SECRET`.
 
 Node behavior is determined by the `current-` channel name prefix. A node operating on
 a Current channel applies overwrite-forward semantics rather than the hold-and-cascade
-semantics of a Winch node.
+semantics of a Tide node.
 
 ### Separation of concerns
 
@@ -305,14 +305,14 @@ SEND_SLOT=<slot name>
 POLL_INTERVAL=<seconds>   # default 5
 ```
 
-Provider-specific env vars follow the same namespacing convention as Winch nodes
+Provider-specific env vars follow the same namespacing convention as Tide nodes
 (`RECV_GCS_BUCKET_NAME`, `SEND_RELAY_URL`, etc.). See the system spec for the full table.
 
 ---
 
-## Comparison with Winch
+## Comparison with Tide
 
-| Property | Winch | Current |
+| Property | Tide | Current |
 |----------|-------|----------|
 | Delivery model | Exactly-once, end-to-end confirmed | Best-effort, latest-wins |
 | Backpressure | Yes — sender blocked until ACK | None |
