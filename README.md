@@ -1,6 +1,6 @@
-# Current Protocol
+# Riverway Protocol
 
-Current is a store-and-forward coordination protocol for continuous, unidirectional
+Riverway is a store-and-forward coordination protocol for continuous, unidirectional
 state propagation over shared storage. A producer writes the current state of a system
 into a channel slot; each node in the pipeline immediately forwards it to the next hop;
 a consumer at the end reads the latest available state. There is no ACK, no backpressure,
@@ -8,7 +8,7 @@ and no expectation that any consumer is present. If a newer payload arrives befo
 previous one was consumed, the previous one is overwritten and discarded — this is
 correct behavior, not a failure condition.
 
-Current is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
+Riverway is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
 The system-level specification — including the `ChannelProvider` interface, encryption
 standard, and protocol dispatch rules — lives in
 [`dropchannel/spec`](https://github.com/dropchannel/spec).
@@ -22,7 +22,7 @@ standard, and protocol dispatch rules — lives in
 - [Propagation protocol](#propagation-protocol)
 - [Node lifecycle](#node-lifecycle)
 - [Configuration](#configuration)
-- [Comparison with Tide](#comparison-with-tide)
+- [Comparison with Tideway](#comparison-with-tideway)
 - [Version history](#version-history)
 - [Out of scope](#out-of-scope)
 
@@ -32,7 +32,7 @@ standard, and protocol dispatch rules — lives in
 
 ### The belt
 
-A Current channel is a one-way belt. The producer places the current state of a system
+A Riverway is a one-way belt. The producer places the current state of a system
 onto the belt; the belt carries it forward hop by hop; a consumer at the far end picks
 up whatever is currently on the belt. The belt does not stop if nobody is at the far end.
 It does not wait for acknowledgement that the last item was picked up. It does not hold
@@ -41,10 +41,10 @@ belt is its currency — not its eventual delivery.
 
 ### Channel
 
-A Current channel carries unidirectional flow from a single producer to zero or more
+A Riverway channel carries unidirectional flow from a single producer to zero or more
 consumers. A channel has exactly one physical pipeline. There is no return pipeline and
 no bidirectionality requirement — if bidirectional state exchange is needed, two
-independent Current channels are used.
+independent Riverway channels are used.
 
 ```
 Producer → [physical pipeline] → Consumer(s)
@@ -77,9 +77,9 @@ A Node is a process that forwards blobs from one `ChannelProvider` to the next. 
 are crypto-blind: they forward opaque bytes and perform no cryptographic operations. A
 node has no `SHARED_SECRET`.
 
-Node behavior is determined by the `current-` channel name prefix. A node operating on
-a Current channel applies overwrite-forward semantics rather than the hold-and-cascade
-semantics of a Tide node.
+Node behavior is determined by the `riverway-` channel name prefix. A node operating on
+a Riverway channel applies overwrite-forward semantics rather than the hold-and-cascade
+semantics of a Tideway node.
 
 ### Separation of concerns
 
@@ -97,7 +97,7 @@ semantics of a Tide node.
 
 ## ChannelProvider interface
 
-Current operates through the standard `ChannelProvider` interface defined in
+Riverway operates through the standard `ChannelProvider` interface defined in
 [`dropchannel/spec`](https://github.com/dropchannel/spec). All storage operations are
 expressed through these five operations:
 
@@ -109,9 +109,9 @@ expressed through these five operations:
 | `exists(channel_id, slot)` | Returns `True` if a blob is present, `False` if empty. |
 | `delete(channel_id, slot)` | Delete blob. Idempotent. |
 
-Current nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
+Riverway nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
 overwrite the send-slot. Consumers use only `peek()`. The producer uses `delete()` +
-`write()`. `read()` and `exists()` are not used by any Current participant.
+`write()`. `read()` and `exists()` are not used by any Riverway participant.
 
 | Operation | Producer | Node | Consumer |
 |-----------|----------|------|----------|
@@ -276,7 +276,7 @@ send-slot. Its sole job is: when recv content has changed, push it forward.
 ### Producer endpoint
 
 ```bash
-CHANNEL_ID=current-<identifier>
+CHANNEL_ID=riverway-<identifier>
 SHARED_SECRET=<64 hex chars = 32 bytes>
 CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
 SEND_SLOT=<slot this endpoint writes to>
@@ -286,7 +286,7 @@ POLL_INTERVAL=<seconds>   # cadence for overwrite check; default 5
 ### Consumer endpoint
 
 ```bash
-CHANNEL_ID=current-<identifier>
+CHANNEL_ID=riverway-<identifier>
 SHARED_SECRET=<64 hex chars = 32 bytes>
 CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
 RECV_SLOT=<slot this endpoint reads from>
@@ -296,7 +296,7 @@ POLL_INTERVAL=<seconds>   # default 5
 ### Node
 
 ```bash
-CHANNEL_ID=current-<identifier>
+CHANNEL_ID=riverway-<identifier>
 # No SHARED_SECRET — nodes never encrypt or decrypt
 RECV_PROVIDER=<gcs|httprelay|dropbox|local>
 SEND_PROVIDER=<gcs|httprelay|dropbox|local>
@@ -305,14 +305,14 @@ SEND_SLOT=<slot name>
 POLL_INTERVAL=<seconds>   # default 5
 ```
 
-Provider-specific env vars follow the same namespacing convention as Tide nodes
+Provider-specific env vars follow the same namespacing convention as Tideway nodes
 (`RECV_GCS_BUCKET_NAME`, `SEND_RELAY_URL`, etc.). See the system spec for the full table.
 
 ---
 
-## Comparison with Tide
+## Comparison with Tideway
 
-| Property | Tide | Current |
+| Property | Tideway | Riverway |
 |----------|-------|----------|
 | Delivery model | Exactly-once, end-to-end confirmed | Best-effort, latest-wins |
 | Backpressure | Yes — sender blocked until ACK | None |
