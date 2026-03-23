@@ -18,10 +18,8 @@ standard, and protocol dispatch rules — lives in
 ## Contents
 
 - [Conceptual model](#conceptual-model)
-- [ChannelProvider interface](#channelprovider-interface)
 - [Propagation protocol](#propagation-protocol)
 - [Node lifecycle](#node-lifecycle)
-- [Configuration](#configuration)
 - [Comparison with Tideway](#comparison-with-tideway)
 - [Version history](#version-history)
 - [Out of scope](#out-of-scope)
@@ -92,36 +90,6 @@ semantics of a Tideway node.
 | Delivery confirmation | Out of scope (no ACK) |
 | Backpressure | Out of scope (no hold) |
 | Consumer presence | Out of scope (not required) |
-
----
-
-## ChannelProvider interface
-
-Riverway operates through the standard `ChannelProvider` interface defined in
-[`dropchannel/spec`](https://github.com/dropchannel/spec). All storage operations are
-expressed through these five operations:
-
-| Operation | Behavior |
-|-----------|----------|
-| `write(channel_id, slot, data)` | Deposit blob. Returns `True` on success, `False` if slot occupied. |
-| `read(channel_id, slot)` | Retrieve and delete blob (consume-on-read). Used by the consumer endpoint only. |
-| `peek(channel_id, slot)` | Retrieve blob without consuming it. Used by nodes. |
-| `exists(channel_id, slot)` | Returns `True` if a blob is present, `False` if empty. |
-| `delete(channel_id, slot)` | Delete blob. Idempotent. |
-
-Riverway nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
-overwrite the send-slot. Consumers use only `peek()`. The producer uses `delete()` +
-`write()`. `read()` and `exists()` are not used by any Riverway participant.
-
-| Operation | Producer | Node | Consumer |
-|-----------|----------|------|----------|
-| `write()` | ✓ | ✓ | — |
-| `read()` | — | — | — |
-| `peek()` | — | ✓ | ✓ |
-| `exists()` | — | — | — |
-| `delete()` | ✓ | ✓ | — |
-
-There is no ACK cascade and no send-slot polling by any participant.
 
 ---
 
@@ -268,45 +236,6 @@ send-slot. Its sole job is: when recv content has changed, push it forward.
 | Startup | One `peek()`, once only |
 | Polling (no change) | One `peek()` + hash compare |
 | Polling (new payload) | One `peek()` + one `delete()` + one `write()` |
-
----
-
-## Configuration
-
-### Producer endpoint
-
-```bash
-CHANNEL_ID=riverway-<identifier>
-SHARED_SECRET=<64 hex chars = 32 bytes>
-CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
-SEND_SLOT=<slot this endpoint writes to>
-POLL_INTERVAL=<seconds>   # cadence for overwrite check; default 5
-```
-
-### Consumer endpoint
-
-```bash
-CHANNEL_ID=riverway-<identifier>
-SHARED_SECRET=<64 hex chars = 32 bytes>
-CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
-RECV_SLOT=<slot this endpoint reads from>
-POLL_INTERVAL=<seconds>   # default 5
-```
-
-### Node
-
-```bash
-CHANNEL_ID=riverway-<identifier>
-# No SHARED_SECRET — nodes never encrypt or decrypt
-RECV_PROVIDER=<gcs|httprelay|dropbox|local>
-SEND_PROVIDER=<gcs|httprelay|dropbox|local>
-RECV_SLOT=<slot name>
-SEND_SLOT=<slot name>
-POLL_INTERVAL=<seconds>   # default 5
-```
-
-Provider-specific env vars follow the same namespacing convention as Tideway nodes
-(`RECV_GCS_BUCKET_NAME`, `SEND_RELAY_URL`, etc.). See the system spec for the full table.
 
 ---
 

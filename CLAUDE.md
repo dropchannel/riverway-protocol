@@ -1,76 +1,75 @@
 # CLAUDE.md — current-protocol
 
+This file provides guidance to Claude Code when working with this repository.
+
 ## What this repo is
 
-This is the **Current protocol specification** for the [DropChannel](https://github.com/dropchannel) system. It defines the state machine, Waterway semantics, and participant behavior for `current-` prefixed channels.
+The specification for the **Riverway protocol** — one protocol in the DropChannel
+waterway system. No source code, build system, or tests. Markdown specs only.
 
-**Naming note:** This repo is in the process of being renamed. The protocol was previously called *Conveyer* (prefix `conveyer-`) and is now called *Current* (prefix `current-`). The sibling Tide protocol was previously called *Winch*. History files (v0.1.md, v0.2.md) still use the old names — do not update them.
+System-level concerns (DockProvider interface, encryption standard, security model,
+Agent/Worker runtime, observability) live in `dropchannel/spec` and are not owned here.
 
----
+**Naming note:** This repo is being renamed. The protocol was previously called
+*Conveyer* (prefix `conveyer-`), then *Current* (prefix `current-`), and is now called
+*Riverway* (prefix `riverway-`). History files (v0.1.md, v0.2.md) use old names —
+do not update them.
 
-## Where this fits in DropChannel
+## Scope
 
-| Repo | Role |
-|------|------|
-| `dropchannel/spec` | ChannelProvider interface, encryption standard, security model, protocol registry, Agent/Worker runtime |
-| **`dropchannel/current-protocol`** | **This repo — Current protocol state machine spec** |
-| `dropchannel/tide-protocol` | Tide protocol spec (exactly-once, ACK cascade) |
-| `dropchannel/dropchannel-py` | Python reference implementation (all providers + protocols) |
-| `dropchannel/dc-monitor` | Topology visualizer (consumes `telemetry-` channel) |
+This repo owns exactly one thing: the **Riverway state machine specification**.
 
-The **spec repo** is authoritative for the ChannelProvider interface, encryption, and protocol dispatch rules. This repo only owns the Current protocol state machine.
+### What belongs here
 
----
+- Participant roles and behaviors (Endpoint, Raft)
+- Waterway file model — how many files, naming convention, what presence/absence means
+- Forward pass mechanics — which Dock a Raft reads from and writes to, and when
+- Deduplication mechanics (`last_forwarded_hash`)
+- Consumer behavior (peek semantics, multi-consumer model)
+- Protocol-specific error conditions and halt rules
+- Version history
 
-## Current protocol in brief
+### What does not belong here
 
-Current is a **latest-wins, no-ACK, unidirectional** propagation protocol. It is the right choice when you want to continuously observe a system's current state and don't need delivery confirmation.
+- DockProvider interface definition — see `dropchannel/spec/channel-provider.md`
+- Encryption details — see `dropchannel/spec/encryption.md`
+- Security model — see `dropchannel/spec/security-model.md`
+- Agent/Worker config schema — see `dropchannel/spec/agent.md`
+- Heartbeat/telemetry/observability — see `dropchannel/spec/`
+- Dock backend specifics (GCS, Dropbox, local, httprelay)
+- Implementation guidance, configuration, or operational concerns
 
-**Key semantics:**
+**The clean test:** a Raft implementor should need only this repo and
+`dropchannel/spec/channel-provider.md` to implement Riverway correctly.
 
-- Producer writes at its own cadence; never blocked
-- Nodes forward only when recv content has changed (`last_forwarded_hash` deduplication via SHA-256 over ciphertext)
-- Consumers use `peek()` — non-destructive; Waterway is never cleared by consumers
-- No ACK, no backpressure, no `read()` used anywhere in the protocol
-- Multiple consumers may independently observe the same lower-most Dock
+## Working with this repo
 
-**Channel prefix:** `current-<identifier>` (e.g. `current-system-metrics`, `current-gpu-state`)
+The canonical spec is `README.md`. Version history snapshots live in `history/v0.x.md`.
 
-**Contrast with Tide:** Tide uses `read()` + ACK cascade for exactly-once confirmed delivery with backpressure. Current uses `peek()` for continuous best-effort state observation. Choose Tide when every message must be confirmed before the next can be sent.
+**Current state:** `README.md` is current through v0.2. `history/v0.1.md` and
+`history/v0.2.md` exist. Do not edit history files.
 
----
+**To propose a protocol change:** Read `README.md`, then produce a new
+`history/v0.x.md` and an updated `README.md`.
 
-## ChannelProvider interface summary
+Typical prompt:
+> "Read README.md. I want to spec the following change to Riverway: [description].
+> Generate history/v0.x.md and an updated README.md."
 
-Defined in `dropchannel/spec`. Current participants use:
+**History files record changes only — not the full protocol.** A history file must
+contain: the version, what changed from the prior version, the design rationale, and
+any compatibility notes. It must not restate unchanged mechanics. The full protocol
+definition at any point in time is `README.md`.
 
-| Operation | Producer | Node | Consumer |
-|-----------|----------|------|----------|
-| `write()` | ✓ | ✓ | — |
-| `peek()` | — | ✓ | ✓ |
-| `delete()` | ✓ | ✓ | — |
-| `read()` | — | — | — |
-| `exists()` | — | — | — |
+## Vocabulary
 
----
+This repo uses DropChannel waterway terminology throughout. Do not use retired terms.
 
-## Current version: v0.2
-
-- v0.1 → v0.2: added node deduplication hash, guaranteed per-cycle sleep, switched consumer from `read()` to `peek()`
-- v0.1 and v0.2 are wire-compatible for nodes but consumer-incompatible (v0.1 consumer destructively clears the lower-most Dock)
-- History in `history/` — do not edit history files
-
----
-
-## Key open items / known gaps
-
-- **Non-atomic overwrite:** `delete()` + `write()` has a race window where the Waterway is momentarily empty; atomic replace not yet required by spec
-- **No consumer presence detection:** deferred to a future revision (likely heartbeat integration)
-- **No payload sequencing:** application-layer concern
-- **Single producer only:** no detection or prevention of concurrent producers
-
----
-
-## Encryption
-
-End-to-end AES-256-GCM between producer and consumer. Nodes forward opaque ciphertext and hold no `SHARED_SECRET`. Node deduplication hash is computed over ciphertext — nodes remain fully crypto-blind. Encryption standard is defined in `dropchannel/spec`.
+| Term | Retired term |
+|---|---|
+| Raft | Node |
+| Dock / DockProvider | ChannelProvider |
+| Waterway | slot, reach |
+| upper_dock / lower_dock | recv_backend / send_backend |
+| Channel | channel_id (as namespace) |
+| Riverway | Conveyer, Current |
