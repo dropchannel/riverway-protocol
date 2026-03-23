@@ -9,15 +9,17 @@ previous one was consumed, the previous one is overwritten and discarded — thi
 correct behavior, not a failure condition.
 
 Riverway is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
-The system-level specification — including the `DockProvider` interface, encryption
-standard, and protocol dispatch rules — lives in
-[`dropchannel/spec`](https://github.com/dropchannel/spec).
+System-level concerns — the [DockProvider interface](https://github.com/dropchannel/spec/blob/main/channel-provider.md),
+[encryption](https://github.com/dropchannel/spec/blob/main/encryption.md),
+[observability](https://github.com/dropchannel/spec/blob/main/observability.md), and
+[Agent/Worker runtime](https://github.com/dropchannel/spec/blob/main/agent.md) — are
+specified in [`dropchannel/spec`](https://github.com/dropchannel/spec).
 
 ---
 
 ## Contents
 
-- [Conceptual model](#conceptual-model)
+- [Participants](#participants)
 - [Propagation protocol](#propagation-protocol)
 - [Raft lifecycle](#raft-lifecycle)
 - [Comparison with Tideway](#comparison-with-tideway)
@@ -26,77 +28,40 @@ standard, and protocol dispatch rules — lives in
 
 ---
 
-## Conceptual model
+## Participants
 
-### The belt
+### Channel
 
-A Riverway is a one-way belt. The producer places the current state of a system
-onto the belt; the belt carries it forward hop by hop; a consumer at the far end picks
-up whatever is currently on the belt. The belt does not stop if nobody is at the far end.
-It does not wait for acknowledgement that the last item was picked up. It does not hold
-position between items. It moves forward continuously, and the value of any item on the
-belt is its currency — not its eventual delivery.
+A **Channel** is a named path between exactly two endpoints. All Waterways within a
+Channel connect the same two endpoints.
 
-### Channel and Waterway
+### Waterway
 
-A **Channel** is the named path between two fixed endpoints. A **Waterway** is a
-protocol-typed flow path within a Channel. Riverway Waterways use the `riverway-`
-prefix. A Channel may contain Waterways of different protocols simultaneously.
+A **Waterway** is a directed flow path within a Channel — a sequence of one or more
+Docks carrying payloads from the producer endpoint to zero or more consumer endpoints.
+Riverway Waterways are unidirectional, always Upper toward Lower. A Channel may contain
+Waterways of different protocols simultaneously.
 
-A Riverway Waterway carries unidirectional flow from a single producer to zero or more
-consumers, always Upper toward Lower. There is no return flow — if bidirectional state
-exchange is needed, two independent Riverway Waterways are used.
+The Waterway name is invariant across all Docks in the hop sequence.
 
-```
-Producer → [upper_dock Waterway] → Raft → [lower_dock Waterway] → Consumer(s)
-```
+### Endpoint
 
-### Physical pipeline
+An **Endpoint** is the terminating participant. Endpoints are the only participants that
+encrypt or decrypt payload content. A **Producer** endpoint writes the current state at
+application-determined cadence and never waits for downstream signal. A **Consumer**
+endpoint observes the tail of the pipeline using `peek()` — non-destructive. Multiple
+Consumer endpoints may independently observe the same tail Waterway.
 
-A physical pipeline is a directed sequence of one or more Dock hops. Each hop holds at
-most one payload file at a time. Rafts forward payloads immediately and unconditionally
-— if a newer payload is available at the upper_dock, it overwrites whatever is currently
-at the lower_dock.
-
-For multi-hop pipelines, the lower_dock of one Raft serves as the upper_dock of the
-next. The Waterway name is invariant across all Docks; only the Dock backend changes.
-
-### Producer
-
-A Producer is an endpoint that originates payloads. It writes to its upper_dock Waterway
-at whatever cadence its application requires and does not wait for any signal before
-writing the next payload. The producer has no knowledge of pipeline depth, downstream
-consumers, or whether prior payloads were consumed.
-
-### Consumer
-
-A Consumer is an endpoint that observes the tail of the pipeline. It calls `peek()` on
-its lower_dock Waterway to read the latest available payload without clearing it.
-Multiple consumers may independently observe the same tail Waterway. The consumer does
-not affect Waterway state — it is purely observational. There is no signal sent back to
-the producer.
+See [`dropchannel/spec/encryption.md`](https://github.com/dropchannel/spec/blob/main/encryption.md)
+for the encryption standard.
 
 ### Raft
 
-A Raft is a process that forwards blobs from one Dock to the next. Rafts are
-crypto-blind: they forward opaque bytes and perform no cryptographic operations. A Raft
-has no `SHARED_SECRET`.
-
-Raft behavior is determined by the `riverway-` Waterway name prefix. A Raft operating
-on a Riverway Waterway applies overwrite-forward semantics rather than the turn-passing
-semantics of a Tideway Raft.
-
-### Separation of concerns
-
-| Concern | Owner |
-|---------|-------|
-| Encryption / decryption | Endpoint only |
-| Message semantics | Client application layer |
-| Blob transport | Dock |
-| Multi-hop composition | Raft configuration |
-| Delivery confirmation | Out of scope (no ACK) |
-| Backpressure | Out of scope (no hold) |
-| Consumer presence | Out of scope (not required) |
+A **Raft** is a forwarding transport. Rafts carry payloads between Docks without
+decrypting or inspecting content — all payloads are opaque bytes to a Raft. A Raft
+operates against exactly two Docks: the `upper_dock` it reads from and the `lower_dock`
+it writes to. Flow is always Upper → Lower. A Raft belongs to exactly one Waterway and
+has no knowledge of channel semantics.
 
 ---
 
