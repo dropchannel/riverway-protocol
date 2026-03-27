@@ -15,6 +15,9 @@ Agent/Worker runtime, observability) live in `dropchannel/spec` and are not owne
 *Riverway* (prefix `riverway-`). History files (v0.1.md, v0.2.md) use old names —
 do not update them.
 
+**Links note:** Cross-repo links (to other repos in the DropChannel org) use
+<https://github.com/dropchannel/> as the URL root. Intra-repo links use relative URLs.
+
 ## Scope
 
 This repo owns exactly one thing: the **Riverway state machine specification**.
@@ -46,8 +49,8 @@ This repo owns exactly one thing: the **Riverway state machine specification**.
 
 The canonical spec is `README.md`. Version history snapshots live in `history/v0.x.md`.
 
-**Current state:** `README.md` is current through v0.2. `history/v0.1.md` and
-`history/v0.2.md` exist. Do not edit history files.
+**Current state:** `README.md` is current through v0.3. `history/v0.1.md`,
+`history/v0.2.md`, and `history/v0.3.md` exist. Do not edit history files.
 
 **To propose a protocol change:** Read `README.md`, then produce a new
 `history/v0.x.md` and an updated `README.md`.
@@ -61,6 +64,11 @@ contain: the version, what changed from the prior version, the design rationale,
 any compatibility notes. It must not restate unchanged mechanics. The full protocol
 definition at any point in time is `README.md`.
 
+**Keeping CLAUDE.md current:** When producing a new `history/v0.x.md`, review
+CLAUDE.md and update it to reflect any changes — in particular the current version
+in the "Working with this repo" section and any new or retired terms in the
+Vocabulary table.
+
 ## Vocabulary
 
 This repo uses DropChannel waterway terminology throughout. Do not use retired terms.
@@ -70,6 +78,6 @@ This repo uses DropChannel waterway terminology throughout. Do not use retired t
 | Raft | Node |
 | Dock / DockProvider | ChannelProvider |
 | Waterway | slot, reach |
-| upper_dock / lower_dock | recv_backend / send_backend |
+| upper_dock / lower_dock | recv_slot / send_slot |
 | Channel | channel_id (as namespace) |
 | Riverway | Conveyer, Current |
