@@ -1,180 +1,124 @@
-# Conveyer Protocol
+# Riverway Protocol
 
-Conveyer is a store-and-forward coordination protocol for continuous, unidirectional
+Riverway is a store-and-forward coordination protocol for continuous, unidirectional
 state propagation over shared storage. A producer writes the current state of a system
-into a channel slot; each node in the pipeline immediately forwards it to the next hop;
+into a Waterway; each Raft in the pipeline immediately forwards it to the next hop;
 a consumer at the end reads the latest available state. There is no ACK, no backpressure,
 and no expectation that any consumer is present. If a newer payload arrives before the
 previous one was consumed, the previous one is overwritten and discarded — this is
 correct behavior, not a failure condition.
 
-Conveyer is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
-The system-level specification — including the `ChannelProvider` interface, encryption
-standard, and protocol dispatch rules — lives in
-[`dropchannel/spec`](https://github.com/dropchannel/spec).
+Riverway is one protocol in the [DropChannel](https://github.com/dropchannel) runtime.
+System-level concerns — the [DockProvider interface](https://github.com/dropchannel/spec/blob/main/channel-provider.md),
+[encryption](https://github.com/dropchannel/spec/blob/main/encryption.md),
+[observability](https://github.com/dropchannel/spec/blob/main/observability.md), and
+[Agent/Worker runtime](https://github.com/dropchannel/spec/blob/main/agent.md) — are
+specified in [`dropchannel/spec`](https://github.com/dropchannel/spec).
 
 ---
 
 ## Contents
 
-- [Conceptual model](#conceptual-model)
-- [ChannelProvider interface](#channelprovider-interface)
+- [Participants](#participants)
 - [Propagation protocol](#propagation-protocol)
-- [Node lifecycle](#node-lifecycle)
-- [Configuration](#configuration)
-- [Comparison with Winch](#comparison-with-winch)
+- [Raft lifecycle](#raft-lifecycle)
+- [Comparison with Tideway](#comparison-with-tideway)
 - [Version history](#version-history)
 - [Out of scope](#out-of-scope)
 
 ---
 
-## Conceptual model
-
-### The belt
-
-A Conveyer channel is a one-way belt. The producer places the current state of a system
-onto the belt; the belt carries it forward hop by hop; a consumer at the far end picks
-up whatever is currently on the belt. The belt does not stop if nobody is at the far end.
-It does not wait for acknowledgement that the last item was picked up. It does not hold
-position between items. It moves forward continuously, and the value of any item on the
-belt is its currency — not its eventual delivery.
+## Participants
 
 ### Channel
 
-A Conveyer channel carries unidirectional flow from a single producer to zero or more
-consumers. A channel has exactly one physical pipeline. There is no return pipeline and
-no bidirectionality requirement — if bidirectional state exchange is needed, two
-independent Conveyer channels are used.
+A **Channel** is a named path between exactly two endpoints. All Waterways within a
+Channel connect the same two endpoints.
 
-```
-Producer → [physical pipeline] → Consumer(s)
-```
+### Waterway
 
-### Physical pipeline
+A **Waterway** is a directed flow path within a Channel — a sequence of one or more
+Docks carrying payloads from the producer endpoint to zero or more consumer endpoints.
+Riverway Waterways are unidirectional, always Upper toward Lower. A Channel may contain
+Waterways of different protocols simultaneously.
 
-A physical pipeline is a directed sequence of one or more `ChannelProvider` hops. Each
-hop holds at most one payload at a time. Nodes forward payloads immediately and
-unconditionally — if a newer payload is available on the recv-slot, it overwrites
-whatever is currently on the send-slot.
+The Waterway name is invariant across all Docks in the hop sequence.
 
-### Producer
+### Endpoint
 
-A Producer is an endpoint that originates payloads. It writes to its send-slot at
-whatever cadence its application requires and does not wait for any signal before writing
-the next payload. The producer has no knowledge of pipeline depth, downstream consumers,
-or whether prior payloads were consumed.
+An **Endpoint** is the terminating participant. Endpoints are the only participants that
+encrypt or decrypt payload content. A **Producer** endpoint writes the current state at
+application-determined cadence and never waits for downstream signal. A **Consumer**
+endpoint observes the tail of the pipeline using `peek()` — non-destructive. Multiple
+Consumer endpoints may independently observe the same tail Waterway.
 
-### Consumer
+See [`dropchannel/spec/encryption.md`](https://github.com/dropchannel/spec/blob/main/encryption.md)
+for the encryption standard.
 
-A Consumer is an endpoint that observes the tail of the pipeline. It calls `peek()` on
-its recv-slot to read the latest available payload without clearing it. Multiple
-consumers may independently observe the same tail slot. The consumer does not affect
-slot state — it is purely observational. There is no signal sent back to the producer.
+### Raft
 
-### Node
-
-A Node is a process that forwards blobs from one `ChannelProvider` to the next. Nodes
-are crypto-blind: they forward opaque bytes and perform no cryptographic operations. A
-node has no `SHARED_SECRET`.
-
-Node behavior is determined by the `conveyer-` channel name prefix. A node operating on
-a Conveyer channel applies overwrite-forward semantics rather than the hold-and-cascade
-semantics of a Winch node.
-
-### Separation of concerns
-
-| Concern | Owner |
-|---------|-------|
-| Encryption / decryption | Endpoint only |
-| Message semantics | Client application layer |
-| Blob transport | ChannelProvider |
-| Multi-hop composition | Node configuration |
-| Delivery confirmation | Out of scope (no ACK) |
-| Backpressure | Out of scope (no hold) |
-| Consumer presence | Out of scope (not required) |
-
----
-
-## ChannelProvider interface
-
-Conveyer operates through the standard `ChannelProvider` interface defined in
-[`dropchannel/spec`](https://github.com/dropchannel/spec). All storage operations are
-expressed through these five operations:
-
-| Operation | Behavior |
-|-----------|----------|
-| `write(channel_id, slot, data)` | Deposit blob. Returns `True` on success, `False` if slot occupied. |
-| `read(channel_id, slot)` | Retrieve and delete blob (consume-on-read). Used by the consumer endpoint only. |
-| `peek(channel_id, slot)` | Retrieve blob without consuming it. Used by nodes. |
-| `exists(channel_id, slot)` | Returns `True` if a blob is present, `False` if empty. |
-| `delete(channel_id, slot)` | Delete blob. Idempotent. |
-
-Conveyer nodes use `peek()` to read the recv-slot and `delete()` + `write()` to
-overwrite the send-slot. Consumers use only `peek()`. The producer uses `delete()` +
-`write()`. `read()` and `exists()` are not used by any Conveyer participant.
-
-| Operation | Producer | Node | Consumer |
-|-----------|----------|------|----------|
-| `write()` | ✓ | ✓ | — |
-| `read()` | — | — | — |
-| `peek()` | — | ✓ | ✓ |
-| `exists()` | — | — | — |
-| `delete()` | ✓ | ✓ | — |
-
-There is no ACK cascade and no send-slot polling by any participant.
+A **Raft** is a forwarding transport. Rafts carry payloads between Docks without
+decrypting or inspecting content — all payloads are opaque bytes to a Raft. A Raft
+operates against exactly two Docks: the `upper_dock` it reads from and the `lower_dock`
+it writes to. Flow is always Upper → Lower. A Raft belongs to exactly one Waterway and
+has no knowledge of channel semantics.
 
 ---
 
 ## Propagation protocol
 
-### Slot semantics
+### Waterway file model
 
-**Slot presence = current state available. Slot absence = no state yet.**
+A Riverway Waterway holds exactly one payload file at a time, using the fixed canonical
+filename `payload`. All participants address the file as `(channel, waterway, "payload")`
+against the appropriate Dock.
 
-A blob in a slot is the most recent payload to have reached that position. It remains
-in the slot until overwritten by a newer payload from upstream. Consumers do not clear
-slots — observation is non-destructive. There is no notion of a slot being "in-flight"
-or "held pending ACK."
+**File present = current state available. File absent = no state yet.**
+
+The file in the Waterway is the most recent payload to have reached that position. It
+remains there until overwritten by a newer payload from upstream. Consumers do not clear
+the file — observation is non-destructive. There is no notion of a file being
+"in-flight" or "held pending ACK."
 
 ### Forward pass
 
-When a node finds a payload on its recv-slot, it compares it to the last blob it
+When a Raft finds a payload at its upper_dock, it compares it to the last blob it
 forwarded. If the content differs (or no prior forward has occurred), it overwrites the
-send-slot unconditionally. If the content is identical, the forward is skipped — the
-send-slot already holds the correct value. The node then sleeps regardless of outcome.
+lower_dock unconditionally. If the content is identical, the forward is skipped — the
+lower_dock already holds the correct value. The Raft then sleeps regardless of outcome.
 
 ```
-Node forward pass:
+Raft forward pass:
 
-  blob = peek(recv_slot)        # non-consuming; None if empty
+  blob = upper_dock.peek(channel, waterway, "payload")   # non-consuming; None if absent
   if blob is not None:
-      h = sha256(blob)          # hash over ciphertext; node stays crypto-blind
+      h = sha256(blob)              # hash over ciphertext; Raft stays crypto-blind
       if h != last_forwarded_hash:
-          delete(send_slot)     # idempotent
-          write(send_slot, blob)
+          lower_dock.delete(channel, waterway, "payload")    # idempotent
+          lower_dock.write(channel, waterway, "payload", blob)
           last_forwarded_hash = h
-  sleep(POLL_INTERVAL)          # always sleep
+  sleep(POLL_INTERVAL)              # always sleep
 ```
 
 The deduplication hash is held in memory only. It is not persisted across restarts. On
-restart, the first recv-slot payload is always forwarded unconditionally.
+restart, the first upper_dock payload is always forwarded unconditionally.
 
 ### Consumer observation
 
-The consumer calls `peek()` on its recv-slot — non-destructive. The slot is not cleared.
-Multiple consumers may independently observe the same slot. The consumer sleeps
-regardless of whether a payload was found.
+The consumer calls `peek()` on its lower_dock Waterway — non-destructive. The file is
+not cleared. Multiple consumers may independently observe the same tail Waterway. The
+consumer sleeps regardless of whether a payload was found.
 
 ```
 Consumer observation:
 
-  blob = peek(recv_slot)        # non-consuming; slot unchanged
+  blob = lower_dock.peek(channel, waterway, "payload")   # non-consuming; file unchanged
   if blob is not None:
       deliver(blob)             # latest state delivered to application
   sleep(POLL_INTERVAL)          # always sleep
 ```
 
-Because `peek()` does not clear the slot, the consumer will deliver the same blob on
+Because `peek()` does not clear the file, the consumer will deliver the same blob on
 every cycle until a newer payload propagates through the pipeline. Applications MUST be
 prepared to receive the same payload repeatedly. To detect new arrivals, the application
 MAY maintain its own hash of the last-seen blob and compare — this is an
@@ -182,15 +126,15 @@ application-layer concern.
 
 ### Producer write
 
-The producer writes to its send-slot at application-determined cadence. If the send-slot
-is still occupied from a prior write, the producer overwrites it unconditionally —
-identical semantics to a node's overwrite-forward behavior.
+The producer writes to its upper_dock Waterway at application-determined cadence. If
+the file is still occupied from a prior write, the producer overwrites it unconditionally
+— identical semantics to a Raft's overwrite-forward behavior.
 
 ```
 Producer write:
 
-  delete(send_slot)        # idempotent; clears prior value if present
-  write(send_slot, payload)
+  upper_dock.delete(channel, waterway, "payload")    # idempotent; clears prior value if present
+  upper_dock.write(channel, waterway, "payload", payload)
 ```
 
 ### Key properties
@@ -201,65 +145,65 @@ own cadence regardless of downstream activity.
 **No delivery confirmation.** The producer receives no signal that any consumer has
 observed its payload. Consumer presence is not observable at the protocol level.
 
-**Latest-wins.** At any point in the pipeline, a slot holds the most recent payload to
-have reached that position. Older payloads do not queue.
+**Latest-wins.** At any position in the pipeline, a Waterway holds the most recent
+payload to have reached that Dock. Older payloads do not queue.
 
-**Stable between updates.** Once a payload has propagated to a slot, it remains there
-undisturbed until a newer payload arrives. Nodes do not re-forward unchanged content.
-Consumers do not clear slots. The belt carries the current value continuously.
+**Stable between updates.** Once a payload has propagated to a Dock, it remains there
+undisturbed until a newer payload arrives. Rafts do not re-forward unchanged content.
+Consumers do not clear files. The belt carries the current value continuously.
 
-**Non-destructive observation.** Any number of consumers may peek the tail slot
+**Non-destructive observation.** Any number of consumers may peek the tail Waterway
 independently without interfering with each other or with pipeline operation.
 
 **Crash safety.** If any participant crashes mid-forward, the most recently written
-payload remains durably in every slot already written. On restart, each node inspects
-its recv-slot and resumes. The in-memory deduplication hash is lost on restart, causing
+payload remains durably at every Dock already written. On restart, each Raft inspects
+its upper_dock and resumes. The in-memory deduplication hash is lost on restart, causing
 at most one redundant forward on resumption.
 
-**Consumer absence is not an error.** If no consumer is polling, the tail slot holds the
-latest forwarded payload indefinitely, ready for any consumer that arrives.
+**Consumer absence is not an error.** If no consumer is polling, the tail Waterway holds
+the latest forwarded payload indefinitely, ready for any consumer that arrives.
 
 ---
 
-## Node lifecycle
+## Raft lifecycle
 
 ### State
 
-Each node maintains one piece of in-memory state across cycles:
+Each Raft maintains one piece of in-memory state across cycles:
 
 ```
-last_forwarded_hash: bytes | None   # SHA-256 of last blob written to send-slot
+last_forwarded_hash: bytes | None   # SHA-256 of last blob written to lower_dock
 ```
 
 Initialized to `None` on startup. Not persisted across restarts.
 
-### Startup: inspect recv-slot only
+### Startup: inspect upper_dock only
 
-On startup the node calls `peek()` on its recv-slot once. The send-slot is not
-inspected.
+On startup the Raft calls `peek()` on its upper_dock Waterway once. The lower_dock is
+not inspected.
 
-| Recv-slot | Action |
-|-----------|--------|
-| Empty | Set `last_forwarded_hash = None`. → Polling loop. |
-| Occupied | Forward unconditionally. Set `last_forwarded_hash = sha256(blob)`. → Polling loop. |
+| upper_dock | Action |
+|------------|--------|
+| Absent | Set `last_forwarded_hash = None`. → Polling loop. |
+| Present | Forward unconditionally. Set `last_forwarded_hash = sha256(blob)`. → Polling loop. |
 
 ### Polling loop (single steady state)
 
 ```
 Loop:
-  blob = peek(recv_slot)
+  blob = upper_dock.peek(channel, waterway, "payload")
   if blob is not None:
       h = sha256(blob)
       if h != last_forwarded_hash:
-          delete(send_slot)
-          write(send_slot, blob)
+          lower_dock.delete(channel, waterway, "payload")
+          lower_dock.write(channel, waterway, "payload", blob)
           last_forwarded_hash = h
   sleep(POLL_INTERVAL)    # unconditional
   repeat
 ```
 
-The node sleeps at the end of every cycle without exception. It never watches its
-send-slot. Its sole job is: when recv content has changed, push it forward.
+The Raft sleeps at the end of every cycle without exception. It never watches its
+lower_dock. Its sole job is: when upper_dock content has changed, push it forward.
 
 ### Polling cost
 
@@ -271,58 +215,19 @@ send-slot. Its sole job is: when recv content has changed, push it forward.
 
 ---
 
-## Configuration
+## Comparison with Tideway
 
-### Producer endpoint
-
-```bash
-CHANNEL_ID=conveyer-<identifier>
-SHARED_SECRET=<64 hex chars = 32 bytes>
-CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
-SEND_SLOT=<slot this endpoint writes to>
-POLL_INTERVAL=<seconds>   # cadence for overwrite check; default 5
-```
-
-### Consumer endpoint
-
-```bash
-CHANNEL_ID=conveyer-<identifier>
-SHARED_SECRET=<64 hex chars = 32 bytes>
-CHANNEL_PROVIDER=<gcs|httprelay|dropbox|local>
-RECV_SLOT=<slot this endpoint reads from>
-POLL_INTERVAL=<seconds>   # default 5
-```
-
-### Node
-
-```bash
-CHANNEL_ID=conveyer-<identifier>
-# No SHARED_SECRET — nodes never encrypt or decrypt
-RECV_PROVIDER=<gcs|httprelay|dropbox|local>
-SEND_PROVIDER=<gcs|httprelay|dropbox|local>
-RECV_SLOT=<slot name>
-SEND_SLOT=<slot name>
-POLL_INTERVAL=<seconds>   # default 5
-```
-
-Provider-specific env vars follow the same namespacing convention as Winch nodes
-(`RECV_GCS_BUCKET_NAME`, `SEND_RELAY_URL`, etc.). See the system spec for the full table.
-
----
-
-## Comparison with Winch
-
-| Property | Winch | Conveyer |
+| Property | Tideway | Riverway |
 |----------|-------|----------|
 | Delivery model | Exactly-once, end-to-end confirmed | Best-effort, latest-wins |
 | Backpressure | Yes — sender blocked until ACK | None |
 | ACK cascade | Yes | No |
-| Slot contention | Write guard; no overwrite | Overwrite on change; deduplication otherwise |
+| Waterway contention | Write guard; no overwrite | Overwrite on change; deduplication otherwise |
 | Consumer operation | `read()` — destructive | `peek()` — non-destructive |
 | Multiple consumers | No | Yes |
 | Consumer required | Yes — ACK cascade requires it | No |
-| Pipeline direction | Bidirectional (two pipelines) | Unidirectional |
-| Node state | Stateless between cycles | `last_forwarded_hash` in memory |
+| Pipeline direction | Turn-passing (Upper ↔ Lower) | Unidirectional (Upper → Lower only) |
+| Raft state | Stateless between cycles | `last_forwarded_hash` in memory |
 | Crash recovery | Full — any state reconstructible | Full — latest written payload survives; hash lost |
 | Intended use | Reliable message passing | Continuous state observation |
 
@@ -334,6 +239,7 @@ Provider-specific env vars follow the same namespacing convention as Winch nodes
 |---------|---------|
 | [v0.1](history/v0.1.md) | Initial protocol: overwrite-forward, no ACK, single-slot pipeline |
 | [v0.2](history/v0.2.md) | Node deduplication via content hash; unconditional sleep; consumer uses `peek()` |
+| [v0.3](history/v0.3.md) | Vocabulary update: Node→Raft, ChannelProvider→Dock, slot→Waterway file, channel_id→channel; upper_dock/lower_dock replace recv_slot/send_slot; canonical filename `payload` defined |
 
 ---
 
@@ -343,7 +249,7 @@ Provider-specific env vars follow the same namespacing convention as Winch nodes
 - Consumer presence detection (heartbeat protocol to be specified in a future revision)
 - Ordered delivery guarantees across multiple payloads
 - Multiple producers on a single channel
-- Atomic overwrite (delete + write has a race window on all current providers)
+- Atomic overwrite (delete + write has a race window on all current Dock backends)
 - Payload sequencing or versioning
 - Retention of prior payloads (history)
 - Configurable overwrite policy (e.g. timestamp-gated overwrite)
